@@ -128,47 +128,74 @@ let state = { lat: 0, lon: 0, lang: "fr", pages: [] };
 
 const TOURIST_TYPES = ["Q570116","Q4989906","Q33506","Q32815","Q16970","Q2977","Q16560","Q23413","Q57821",
   "Q839954","Q22698","Q1107656","Q330284","Q9259","Q174782","Q12280","Q12518","Q82117","Q40080","Q8502",
-  "Q34038","Q43501","Q24354","Q34627","Q44539","Q2065736","Q179700","Q15243209","Q1081138","Q35509","Q23442","Q483110"];
+  "Q34038","Q43501","Q24354","Q34627","Q44539","Q2065736","Q179700","Q15243209","Q1081138","Q35509","Q23442","Q483110","Q11303","Q860861"];
 
 async function touristSet(qids) {
   if (!qids.length) return null;
   const q = "SELECT DISTINCT ?item WHERE { VALUES ?item { " + qids.map((x) => "wd:" + x).join(" ") +
     " } VALUES ?c { " + TOURIST_TYPES.map((x) => "wd:" + x).join(" ") + " } ?item wdt:P31/wdt:P279* ?c }";
   try {
-    const r = await fetch("https://query.wikidata.org/sparql?format=json&query=" + encodeURIComponent(q));
+    const r = await fetch("https://query.wikidata.org/sparql", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/sparql-results+json" },
+      body: "query=" + encodeURIComponent(q)
+    });
     if (!r.ok) return null;
     const j = await r.json();
     return new Set(j.results.bindings.map((b) => b.item.value.split("/").pop()));
   } catch (e) { return null; }
 }
 
-async function wikiFetch(lang, lat, lon) {
-  const base = "https://" + lang + ".wikipedia.org/w/api.php?action=query&format=json&origin=*" +
-    "&generator=geosearch&ggscoord=" + lat + "%7C" + lon + "&ggsradius=10000&ggslimit=50" +
-    "&prop=coordinates%7Cpageimages%7Cextracts%7Cpageviews%7Cpageprops&ppprop=wikibase_item&piprop=thumbnail&pithumbsize=300" +
-    "&exintro=1&explaintext=1&exsentences=2&exlimit=max&colimit=max&pvipdays=30";
+async function queryAll(url) {
   const pages = {};
   let cont = null;
-  for (let i = 0; i < 4; i++) {
-    let url = base;
-    if (cont) for (const k in cont) url += "&" + k + "=" + encodeURIComponent(cont[k]);
-    const data = await fetch(url).then((r) => r.json());
+  for (let i = 0; i < 8; i++) {
+    let u = url;
+    if (cont) for (const k in cont) u += "&" + k + "=" + encodeURIComponent(cont[k]);
+    const data = await fetch(u).then((r) => r.json());
     const q = (data.query && data.query.pages) || {};
     for (const id in q) pages[id] = Object.assign(pages[id] || {}, q[id]);
     if (!data.continue) break;
     cont = data.continue;
   }
-  const list = Object.values(pages).filter((p) => p.coordinates);
-  const qids = list.map((p) => p.pageprops && p.pageprops.wikibase_item).filter(Boolean);
-  const tset = await touristSet(qids);
-  return list.map((p) => {
-    const pv = p.pageviews ? Object.values(p.pageviews).reduce((a, b) => a + (b || 0), 0) : 0;
-    const c = p.coordinates[0];
+  return pages;
+}
+
+async function wikiFetch(lang, lat, lon) {
+  const api = "https://" + lang + ".wikipedia.org/w/api.php?format=json&origin=*&action=query";
+
+  // 1) 200 articles proches : coordonnées, identifiant Wikidata, fréquentation
+  const p1 = await queryAll(api + "&generator=geosearch&ggscoord=" + lat + "%7C" + lon +
+    "&ggsradius=10000&ggslimit=200&prop=coordinates%7Cpageprops%7Cpageviews&ppprop=wikibase_item&colimit=max&pvipdays=30");
+  const base = Object.values(p1).filter((p) => p.coordinates).map((p) => {
     const qid = p.pageprops && p.pageprops.wikibase_item;
-    return { id: p.pageid, qid, key: qid || (lang + ":" + p.pageid), title: p.title, lat: c.lat, lon: c.lon, views: pv,
-             img: p.thumbnail && p.thumbnail.source, text: p.extract || "", index: p.index || 0,
-             tourist: tset && qid ? tset.has(qid) : (tset ? false : null) };
+    return { id: p.pageid, qid, key: qid || (lang + ":" + p.pageid), title: p.title,
+             lat: p.coordinates[0].lat, lon: p.coordinates[0].lon,
+             views: p.pageviews ? Object.values(p.pageviews).reduce((a, b) => a + (b || 0), 0) : 0,
+             index: p.index || 0, img: null, text: "" };
   });
+
+  // 2) filtre touristique (Wikidata)
+  const tset = await touristSet(base.map((p) => p.qid).filter(Boolean));
+  base.forEach((p) => { p.tourist = tset ? (p.qid ? tset.has(p.qid) : false) : null; });
+
+  // 3) on garde les plus consultés (60 touristiques + 20 autres)
+  const byViews = (a, b) => b.views - a.views || a.index - b.index;
+  const tour = base.filter((p) => p.tourist !== false).sort(byViews).slice(0, 60);
+  const others = base.filter((p) => p.tourist === false).sort(byViews).slice(0, 20);
+  const chosen = tour.concat(others);
+
+  // 4) photos et descriptions pour ces lieux seulement
+  const chunks = [];
+  for (let i = 0; i < chosen.length; i += 50) chunks.push(chosen.slice(i, i + 50));
+  const details = await Promise.all(chunks.map((c) => queryAll(api + "&pageids=" + c.map((p) => p.id).join("%7C") +
+    "&prop=pageimages%7Cextracts&piprop=thumbnail&pithumbsize=300&pilimit=max&exintro=1&explaintext=1&exsentences=2&exlimit=max")));
+  const d = Object.assign({}, ...details);
+  chosen.forEach((p) => {
+    const x = d[p.id];
+    if (x) { p.img = x.thumbnail && x.thumbnail.source; p.text = x.extract || ""; }
+  });
+  return chosen;
 }
 
 /* ---------- Avis : statistiques ---------- */
