@@ -49,6 +49,13 @@
     </select>
     <button>Go</button>
   </form>
+  <div id="sortbar" style="display:none;margin-top:8px;font-size:13px">
+    Trier par :
+    <select id="sort" style="width:auto;padding:4px 8px">
+      <option value="pop">Les plus populaires</option>
+      <option value="dist">Les plus proches</option>
+    </select>
+  </div>
 </header>
 <main>
   <div id="map"></div>
@@ -73,52 +80,82 @@ function km(lat1, lon1, lat2, lon2) {
   return 6371 * 2 * Math.asin(Math.sqrt(a));
 }
 
+let state = { lat: 0, lon: 0, lang: "fr", pages: [] };
+
+async function wikiFetch(lang, lat, lon) {
+  const base = "https://" + lang + ".wikipedia.org/w/api.php?action=query&format=json&origin=*" +
+    "&generator=geosearch&ggscoord=" + lat + "%7C" + lon + "&ggsradius=10000&ggslimit=50" +
+    "&prop=coordinates%7Cpageimages%7Cextracts%7Cpageviews&piprop=thumbnail&pithumbsize=300" +
+    "&exintro=1&explaintext=1&exsentences=2&exlimit=max&colimit=max&pvipdays=30";
+  const pages = {};
+  let cont = null;
+  for (let i = 0; i < 4; i++) {
+    let url = base;
+    if (cont) for (const k in cont) url += "&" + k + "=" + encodeURIComponent(cont[k]);
+    const data = await fetch(url).then((r) => r.json());
+    const q = (data.query && data.query.pages) || {};
+    for (const id in q) pages[id] = Object.assign(pages[id] || {}, q[id]);
+    if (!data.continue) break;
+    cont = data.continue;
+  }
+  return Object.values(pages).filter((p) => p.coordinates).map((p) => {
+    const pv = p.pageviews ? Object.values(p.pageviews).reduce((a, b) => a + (b || 0), 0) : 0;
+    const c = p.coordinates[0];
+    return { id: p.pageid, title: p.title, lat: c.lat, lon: c.lon, views: pv,
+             img: p.thumbnail && p.thumbnail.source, text: p.extract || "", index: p.index || 0 };
+  });
+}
+
+function render() {
+  const list = $("list");
+  layer.clearLayers();
+  list.innerHTML = "";
+  const { lat, lon, lang } = state;
+  const items = state.pages.slice();
+  if ($("sort").value === "pop") items.sort((a, b) => b.views - a.views || a.index - b.index);
+  else items.sort((a, b) => a.index - b.index);
+
+  const bounds = [];
+  items.forEach((p) => {
+    const link = "https://" + lang + ".wikipedia.org/?curid=" + p.id;
+    const marker = L.marker([p.lat, p.lon]).addTo(layer)
+      .bindPopup("<b>" + esc(p.title) + '</b><br><a href="' + link + '" target="_blank" rel="noopener">Wikipedia</a>');
+    bounds.push([p.lat, p.lon]);
+    const d = km(lat, lon, p.lat, p.lon).toFixed(1);
+    const el = document.createElement("div");
+    el.className = "card";
+    el.innerHTML =
+      (p.img ? '<img loading="lazy" src="' + esc(p.img) + '" alt="">' : '<div class="ph">📍</div>') +
+      "<div><h3>" + esc(p.title) + "</h3>" +
+      "<p>" + esc(p.text) + "</p>" +
+      '<span class="dist">' + d + ' km du centre</span> · <a href="' + link + '" target="_blank" rel="noopener">Wikipedia</a></div>';
+    el.addEventListener("click", (e) => {
+      if (e.target.tagName === "A") return;
+      map.flyTo([p.lat, p.lon], 16);
+      marker.openPopup();
+      $("map").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+    list.appendChild(el);
+  });
+  if (bounds.length) map.fitBounds(bounds, { padding: [30, 30], maxZoom: 15 });
+  list.scrollTop = 0;
+}
+
 async function search(city, lang) {
   const list = $("list");
   list.innerHTML = '<div id="status">Recherche en cours…</div>';
   layer.clearLayers();
+  $("sortbar").style.display = "none";
   try {
     const g = await fetch("https://nominatim.openstreetmap.org/search?format=json&limit=1&accept-language=" + lang + "&q=" + encodeURIComponent(city)).then((r) => r.json());
     if (!g.length) { list.innerHTML = '<div id="status">Ville introuvable. Vérifie l’orthographe.</div>'; return; }
     const lat = +g[0].lat, lon = +g[0].lon;
     map.setView([lat, lon], 13);
-
-    const url = "https://" + lang + ".wikipedia.org/w/api.php?action=query&format=json&origin=*" +
-      "&generator=geosearch&ggscoord=" + lat + "%7C" + lon + "&ggsradius=10000&ggslimit=40" +
-      "&prop=coordinates%7Cpageimages%7Cextracts&piprop=thumbnail&pithumbsize=300" +
-      "&exintro=1&explaintext=1&exsentences=2&exlimit=max&colimit=max";
-    const data = await fetch(url).then((r) => r.json());
-    const pages = Object.values((data.query && data.query.pages) || {})
-      .filter((p) => p.coordinates)
-      .sort((a, b) => a.index - b.index);
-
+    const pages = await wikiFetch(lang, lat, lon);
     if (!pages.length) { list.innerHTML = '<div id="status">Aucun lieu trouvé pour cette ville dans cette langue. Essaie EN.</div>'; return; }
-
-    list.innerHTML = "";
-    const bounds = [];
-    pages.forEach((p) => {
-      const c = p.coordinates[0];
-      const link = "https://" + lang + ".wikipedia.org/?curid=" + p.pageid;
-      const marker = L.marker([c.lat, c.lon]).addTo(layer)
-        .bindPopup("<b>" + esc(p.title) + '</b><br><a href="' + link + '" target="_blank" rel="noopener">Wikipedia</a>');
-      bounds.push([c.lat, c.lon]);
-      const d = km(lat, lon, c.lat, c.lon).toFixed(1);
-      const el = document.createElement("div");
-      el.className = "card";
-      el.innerHTML =
-        (p.thumbnail ? '<img loading="lazy" src="' + esc(p.thumbnail.source) + '" alt="">' : '<div class="ph">📍</div>') +
-        "<div><h3>" + esc(p.title) + "</h3>" +
-        "<p>" + esc(p.extract || "") + "</p>" +
-        '<span class="dist">' + d + ' km du centre</span> · <a href="' + link + '" target="_blank" rel="noopener">Wikipedia</a></div>';
-      el.addEventListener("click", (e) => {
-        if (e.target.tagName === "A") return;
-        map.flyTo([c.lat, c.lon], 16);
-        marker.openPopup();
-        $("map").scrollIntoView({ behavior: "smooth", block: "nearest" });
-      });
-      list.appendChild(el);
-    });
-    map.fitBounds(bounds, { padding: [30, 30], maxZoom: 15 });
+    state = { lat, lon, lang, pages };
+    $("sortbar").style.display = "block";
+    render();
   } catch (err) {
     list.innerHTML = '<div id="status">Erreur de connexion. Réessaie dans un instant.</div>';
   }
@@ -128,6 +165,7 @@ $("f").addEventListener("submit", (e) => {
   e.preventDefault();
   search($("q").value.trim(), $("lang").value);
 });
+$("sort").addEventListener("change", render);
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("service-worker.js");
 </script>
