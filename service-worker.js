@@ -1,4 +1,4 @@
-const CACHE = "visit-anywhere-v3";
+const CACHE = "visit-anywhere-v4";
 const FILES = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", (e) => {
@@ -17,6 +17,7 @@ self.addEventListener("activate", (e) => {
 
 self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET") return;
+  if (e.request.url.includes("supabase.co")) return;
   e.respondWith(
     fetch(e.request)
       .then((res) => {

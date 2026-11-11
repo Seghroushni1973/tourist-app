@@ -12,12 +12,16 @@
   *{box-sizing:border-box}
   body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f4f6f5;color:#1b2b27;height:100vh;height:100dvh;display:flex;flex-direction:column}
   header{background:#007a5e;color:#fff;padding:10px 12px}
-  header h1{margin:0 0 8px;font-size:18px}
-  form{display:flex;gap:6px}
-  input,select,button{font:inherit;border-radius:8px;border:0;padding:10px}
-  input{flex:1;min-width:0}
+  .top{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+  header h1{margin:0;font-size:18px}
+  #acct{background:rgba(255,255,255,.2);color:#fff;padding:6px 10px;font-size:13px;font-weight:500}
+  form.search{display:flex;gap:6px}
+  input,select,button,textarea{font:inherit;border-radius:8px;border:1px solid #cfd8d4;padding:10px}
+  header input,header select{border:0}
+  header button{border:0}
+  input,textarea{flex:1;min-width:0}
   select{width:70px}
-  button{background:#ffc828;color:#1b2b27;font-weight:600;cursor:pointer}
+  button{background:#ffc828;color:#1b2b27;font-weight:600;cursor:pointer;border:0}
   main{flex:1;display:flex;flex-direction:column;min-height:0}
   #map{height:40%;min-height:180px}
   #list{flex:1;overflow:auto;padding:10px;display:flex;flex-direction:column;gap:10px}
@@ -29,6 +33,23 @@
   .card p{margin:0 0 4px;font-size:13px;color:#4a5d58;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
   .card a{font-size:13px;color:#007a5e}
   .dist{font-size:12px;color:#6b7c77}
+  .rev{margin-top:6px;padding:5px 10px;font-size:13px;background:#e7f3ef;color:#007a5e}
+  .badge{font-size:12px;color:#8a5a00;font-weight:600;margin-left:6px}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:flex-end;justify-content:center;z-index:2000}
+  .modal.open{display:flex}
+  .sheet{background:#fff;width:100%;max-width:520px;max-height:90vh;max-height:90dvh;overflow:auto;border-radius:16px 16px 0 0;padding:16px}
+  @media(min-width:800px){.modal{align-items:center}.sheet{border-radius:16px}}
+  .sheet h2{margin:0 0 4px;font-size:18px}
+  .sheet .row{display:flex;gap:8px;margin:8px 0}
+  .sheet .close{float:right;background:#eee;padding:4px 10px}
+  .review{border-top:1px solid #e3e9e6;padding:10px 0;font-size:14px}
+  .review .meta{font-size:12px;color:#6b7c77;margin-bottom:4px}
+  .review button{background:#fde4e4;color:#a11;padding:2px 8px;font-size:12px;margin-top:4px}
+  .msg{font-size:13px;color:#a11;margin:6px 0}
+  .ok{color:#007a5e}
+  label.f{display:block;font-size:13px;margin-top:8px}
+  .sheet input,.sheet textarea,.sheet select{width:100%;display:block}
+  textarea{min-height:80px;resize:vertical}
   @media(min-width:800px){
     main{flex-direction:row-reverse}
     #map{height:auto;flex:1.4}
@@ -38,8 +59,11 @@
 </head>
 <body>
 <header>
-  <h1>Visit Anywhere</h1>
-  <form id="f">
+  <div class="top">
+    <h1>Visit Anywhere</h1>
+    <button id="acct" type="button">Connexion</button>
+  </div>
+  <form id="f" class="search">
     <input id="q" placeholder="Ville (ex : Istanbul, Rome, Marrakech)" autocomplete="off" required>
     <select id="lang" aria-label="Langue">
       <option value="fr">FR</option>
@@ -63,17 +87,35 @@
   <div id="list"><div id="status">Tape une ville pour voir les lieux à visiter.</div></div>
 </main>
 
+<div class="modal" id="authModal"><div class="sheet">
+  <button class="close" id="authClose" type="button">Fermer</button>
+  <h2>Compte</h2>
+  <div id="authBody"></div>
+</div></div>
+
+<div class="modal" id="revModal"><div class="sheet">
+  <button class="close" id="revClose" type="button">Fermer</button>
+  <h2 id="revTitle"></h2>
+  <div id="revSummary" style="font-size:14px;color:#8a5a00;font-weight:600"></div>
+  <div id="revForm"></div>
+  <div id="revList"></div>
+</div></div>
+
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js"></script>
 <script>
-const map = L.map("map").setView([20, 0], 2);
-L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  maxZoom: 19,
-  attribution: "&copy; OpenStreetMap"
-}).addTo(map);
-const layer = L.layerGroup().addTo(map);
+const SUPABASE_URL = "https://rfddpigvdbtlfgmhksyi.supabase.co";
+const SUPABASE_KEY = "sb_publishable_OdO1ikIresFAhC9K-4UjUQ_kSrEVy7-";
+let sb = null;
+try { sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY); } catch (e) { console.error(e); }
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const stars = (n) => "★".repeat(Math.round(n)) + "☆".repeat(5 - Math.round(n));
+
+const map = L.map("map").setView([20, 0], 2);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "&copy; OpenStreetMap" }).addTo(map);
+const layer = L.layerGroup().addTo(map);
 
 function km(lat1, lon1, lat2, lon2) {
   const r = Math.PI / 180, dLat = (lat2 - lat1) * r, dLon = (lon2 - lon1) * r;
@@ -81,6 +123,7 @@ function km(lat1, lon1, lat2, lon2) {
   return 6371 * 2 * Math.asin(Math.sqrt(a));
 }
 
+/* ---------- Lieux (Wikipedia + Wikidata) ---------- */
 let state = { lat: 0, lon: 0, lang: "fr", pages: [] };
 
 const TOURIST_TYPES = ["Q570116","Q4989906","Q33506","Q32815","Q16970","Q2977","Q16560","Q23413","Q57821",
@@ -121,12 +164,34 @@ async function wikiFetch(lang, lat, lon) {
   return list.map((p) => {
     const pv = p.pageviews ? Object.values(p.pageviews).reduce((a, b) => a + (b || 0), 0) : 0;
     const c = p.coordinates[0];
-    return { id: p.pageid, title: p.title, lat: c.lat, lon: c.lon, views: pv,
+    const qid = p.pageprops && p.pageprops.wikibase_item;
+    return { id: p.pageid, qid, key: qid || (lang + ":" + p.pageid), title: p.title, lat: c.lat, lon: c.lon, views: pv,
              img: p.thumbnail && p.thumbnail.source, text: p.extract || "", index: p.index || 0,
-             tourist: tset && p.pageprops && p.pageprops.wikibase_item ? tset.has(p.pageprops.wikibase_item) : (tset ? false : null) };
+             tourist: tset && qid ? tset.has(qid) : (tset ? false : null) };
   });
 }
 
+/* ---------- Avis : statistiques ---------- */
+let stats = {};
+function paintBadges() {
+  document.querySelectorAll(".badge").forEach((b) => {
+    const s = stats[b.dataset.key];
+    b.textContent = s ? "★ " + (s.sum / s.n).toFixed(1) + " (" + s.n + ")" : "";
+  });
+}
+async function loadStats(keys) {
+  if (!sb || !keys.length) return;
+  const { data, error } = await sb.from("reviews").select("place_key,rating").in("place_key", keys);
+  if (error) return;
+  stats = {};
+  data.forEach((r) => {
+    const s = stats[r.place_key] || (stats[r.place_key] = { sum: 0, n: 0 });
+    s.sum += r.rating; s.n += 1;
+  });
+  paintBadges();
+}
+
+/* ---------- Rendu de la liste ---------- */
 function render() {
   const list = $("list");
   layer.clearLayers();
@@ -153,9 +218,12 @@ function render() {
       (p.img ? '<img loading="lazy" src="' + esc(p.img) + '" alt="">' : '<div class="ph">📍</div>') +
       "<div><h3>" + esc(p.title) + "</h3>" +
       "<p>" + esc(p.text) + "</p>" +
-      '<span class="dist">' + d + ' km du centre</span> · <a href="' + link + '" target="_blank" rel="noopener">Wikipedia</a></div>';
+      '<span class="dist">' + d + ' km du centre</span> · <a href="' + link + '" target="_blank" rel="noopener">Wikipedia</a>' +
+      '<span class="badge" data-key="' + esc(p.key) + '"></span><br>' +
+      '<button class="rev" type="button">💬 Avis</button></div>';
     el.addEventListener("click", (e) => {
       if (e.target.tagName === "A") return;
+      if (e.target.classList.contains("rev")) { openReviews(p); return; }
       map.flyTo([p.lat, p.lon], 16);
       marker.openPopup();
       $("map").scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -164,6 +232,7 @@ function render() {
   });
   if (bounds.length) map.fitBounds(bounds, { padding: [30, 30], maxZoom: 15 });
   list.scrollTop = 0;
+  paintBadges();
 }
 
 async function search(city, lang) {
@@ -181,6 +250,7 @@ async function search(city, lang) {
     state = { lat, lon, lang, pages };
     $("sortbar").style.display = "block";
     render();
+    loadStats(pages.map((p) => p.key));
   } catch (err) {
     list.innerHTML = '<div id="status">Erreur de connexion. Réessaie dans un instant.</div>';
   }
@@ -192,6 +262,109 @@ $("f").addEventListener("submit", (e) => {
 });
 $("sort").addEventListener("change", render);
 $("only").addEventListener("change", render);
+
+/* ---------- Compte ---------- */
+let user = null;
+let currentPlace = null;
+
+function updateAcct() {
+  $("acct").textContent = user ? "👤 " + (user.email || "").split("@")[0] : "Connexion";
+}
+function openModal(id) { $(id).classList.add("open"); }
+function closeModal(id) { $(id).classList.remove("open"); }
+$("authClose").onclick = () => closeModal("authModal");
+$("revClose").onclick = () => { closeModal("revModal"); currentPlace = null; };
+
+function authView() {
+  if (user) {
+    $("authBody").innerHTML = '<p>Connecté : <b>' + esc(user.email) + '</b></p><button id="logout" type="button">Se déconnecter</button>';
+    $("logout").onclick = async () => { await sb.auth.signOut(); closeModal("authModal"); };
+    return;
+  }
+  $("authBody").innerHTML =
+    '<label class="f">E-mail<input id="em" type="email" autocomplete="email"></label>' +
+    '<label class="f">Mot de passe (6 caractères minimum)<input id="pw" type="password" autocomplete="current-password"></label>' +
+    '<div class="msg" id="authMsg"></div>' +
+    '<div class="row"><button id="login" type="button">Se connecter</button>' +
+    '<button id="signup" type="button" style="background:#e7f3ef;color:#007a5e">Créer un compte</button></div>';
+  const msg = (t, ok) => { $("authMsg").textContent = t; $("authMsg").className = "msg" + (ok ? " ok" : ""); };
+  $("login").onclick = async () => {
+    msg("");
+    const { error } = await sb.auth.signInWithPassword({ email: $("em").value.trim(), password: $("pw").value });
+    if (error) msg(error.message); else closeModal("authModal");
+  };
+  $("signup").onclick = async () => {
+    msg("");
+    const { data, error } = await sb.auth.signUp({ email: $("em").value.trim(), password: $("pw").value });
+    if (error) return msg(error.message);
+    if (data.session) closeModal("authModal");
+    else msg("Compte créé. Vérifie ta boîte mail pour confirmer, puis connecte-toi.", true);
+  };
+}
+$("acct").onclick = () => { if (!sb) return; authView(); openModal("authModal"); };
+
+if (sb) {
+  sb.auth.getSession().then(({ data }) => { user = data.session ? data.session.user : null; updateAcct(); });
+  sb.auth.onAuthStateChange((_e, session) => {
+    user = session ? session.user : null;
+    updateAcct();
+    if (currentPlace) openReviews(currentPlace);
+  });
+}
+
+/* ---------- Avis : fenêtre d'un lieu ---------- */
+async function openReviews(p) {
+  currentPlace = p;
+  $("revTitle").textContent = p.title;
+  openModal("revModal");
+  if (!sb) { $("revList").textContent = "Service d’avis indisponible."; return; }
+
+  if (user) {
+    $("revForm").innerHTML =
+      '<label class="f">Ta note<select id="rate"><option value="5">★★★★★ (5)</option><option value="4">★★★★☆ (4)</option>' +
+      '<option value="3">★★★☆☆ (3)</option><option value="2">★★☆☆☆ (2)</option><option value="1">★☆☆☆☆ (1)</option></select></label>' +
+      '<label class="f">Ton conseil (1000 caractères maximum)<textarea id="cmt" maxlength="1000"></textarea></label>' +
+      '<div class="msg" id="revMsg"></div><div class="row"><button id="send" type="button">Publier mon avis</button></div>';
+    $("send").onclick = async () => {
+      $("send").disabled = true;
+      const { error } = await sb.from("reviews").insert({
+        place_key: p.key, place_title: p.title,
+        author_name: (user.email || "voyageur").split("@")[0],
+        rating: +$("rate").value, comment: $("cmt").value.trim()
+      });
+      if (error) { $("revMsg").textContent = error.message; $("send").disabled = false; return; }
+      await openReviews(p);
+      loadStats(state.pages.map((x) => x.key));
+    };
+  } else {
+    $("revForm").innerHTML = '<p style="font-size:14px">Connecte-toi pour laisser un avis.</p>' +
+      '<button id="needLogin" type="button">Connexion</button>';
+    $("needLogin").onclick = () => { authView(); openModal("authModal"); };
+  }
+
+  $("revList").innerHTML = "Chargement…";
+  const { data, error } = await sb.from("reviews").select("*").eq("place_key", p.key)
+    .order("created_at", { ascending: false }).limit(50);
+  if (error) { $("revList").textContent = "Impossible de charger les avis."; return; }
+  if (!data.length) {
+    $("revSummary").textContent = "";
+    $("revList").innerHTML = '<p style="color:#6b7c77;font-size:14px">Aucun avis pour le moment. Sois le premier !</p>';
+    return;
+  }
+  const avg = data.reduce((a, r) => a + r.rating, 0) / data.length;
+  $("revSummary").textContent = stars(avg) + " " + avg.toFixed(1) + " (" + data.length + " avis)";
+  $("revList").innerHTML = data.map((r) =>
+    '<div class="review"><div class="meta">' + esc(r.author_name || "voyageur") + " · " +
+    new Date(r.created_at).toLocaleDateString("fr-FR") + " · " + stars(r.rating) + "</div>" +
+    "<div>" + esc(r.comment || "") + "</div>" +
+    (user && r.user_id === user.id ? '<button data-del="' + r.id + '" type="button">Supprimer</button>' : "") + "</div>"
+  ).join("");
+  document.querySelectorAll("[data-del]").forEach((b) => b.onclick = async () => {
+    await sb.from("reviews").delete().eq("id", b.dataset.del);
+    await openReviews(p);
+    loadStats(state.pages.map((x) => x.key));
+  });
+}
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("service-worker.js");
 </script>
