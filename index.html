@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visit Anywhere</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#007a5e">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f4f6f5;color:#1b2b27;height:100vh;height:100dvh;display:flex;flex-direction:column}
+  header{background:#007a5e;color:#fff;padding:10px 12px}
+  header h1{margin:0 0 8px;font-size:18px}
+  form{display:flex;gap:6px}
+  input,select,button{font:inherit;border-radius:8px;border:0;padding:10px}
+  input{flex:1;min-width:0}
+  select{width:70px}
+  button{background:#ffc828;color:#1b2b27;font-weight:600;cursor:pointer}
+  main{flex:1;display:flex;flex-direction:column;min-height:0}
+  #map{height:40%;min-height:180px}
+  #list{flex:1;overflow:auto;padding:10px;display:flex;flex-direction:column;gap:10px}
+  #status{padding:14px;text-align:center;color:#4a5d58}
+  .card{display:flex;gap:10px;background:#fff;border-radius:12px;padding:10px;box-shadow:0 1px 3px rgba(0,0,0,.1);cursor:pointer}
+  .card img{width:84px;height:84px;object-fit:cover;border-radius:8px;flex:none;background:#dfe6e3}
+  .ph{width:84px;height:84px;border-radius:8px;flex:none;background:#dfe6e3;display:flex;align-items:center;justify-content:center;font-size:28px}
+  .card h3{margin:0 0 4px;font-size:15px}
+  .card p{margin:0 0 4px;font-size:13px;color:#4a5d58;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+  .card a{font-size:13px;color:#007a5e}
+  .dist{font-size:12px;color:#6b7c77}
+  @media(min-width:800px){
+    main{flex-direction:row-reverse}
+    #map{height:auto;flex:1.4}
+    #list{flex:1;max-width:460px}
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Visit Anywhere</h1>
+  <form id="f">
+    <input id="q" placeholder="Ville (ex : Istanbul, Rome, Marrakech)" autocomplete="off" required>
+    <select id="lang" aria-label="Langue">
+      <option value="fr">FR</option>
+      <option value="en">EN</option>
+      <option value="ar">AR</option>
+      <option value="es">ES</option>
+    </select>
+    <button>Go</button>
+  </form>
+</header>
+<main>
+  <div id="map"></div>
+  <div id="list"><div id="status">Tape une ville pour voir les lieux à visiter.</div></div>
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map = L.map("map").setView([20, 0], 2);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  attribution: "&copy; OpenStreetMap"
+}).addTo(map);
+const layer = L.layerGroup().addTo(map);
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function km(lat1, lon1, lat2, lon2) {
+  const r = Math.PI / 180, dLat = (lat2 - lat1) * r, dLon = (lon2 - lon1) * r;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin(dLon / 2) ** 2;
+  return 6371 * 2 * Math.asin(Math.sqrt(a));
+}
+
+async function search(city, lang) {
+  const list = $("list");
+  list.innerHTML = '<div id="status">Recherche en cours…</div>';
+  layer.clearLayers();
+  try {
+    const g = await fetch("https://nominatim.openstreetmap.org/search?format=json&limit=1&accept-language=" + lang + "&q=" + encodeURIComponent(city)).then((r) => r.json());
+    if (!g.length) { list.innerHTML = '<div id="status">Ville introuvable. Vérifie l’orthographe.</div>'; return; }
+    const lat = +g[0].lat, lon = +g[0].lon;
+    map.setView([lat, lon], 13);
+
+    const url = "https://" + lang + ".wikipedia.org/w/api.php?action=query&format=json&origin=*" +
+      "&generator=geosearch&ggscoord=" + lat + "%7C" + lon + "&ggsradius=10000&ggslimit=40" +
+      "&prop=coordinates%7Cpageimages%7Cextracts&piprop=thumbnail&pithumbsize=300" +
+      "&exintro=1&explaintext=1&exsentences=2&exlimit=max&colimit=max";
+    const data = await fetch(url).then((r) => r.json());
+    const pages = Object.values((data.query && data.query.pages) || {})
+      .filter((p) => p.coordinates)
+      .sort((a, b) => a.index - b.index);
+
+    if (!pages.length) { list.innerHTML = '<div id="status">Aucun lieu trouvé pour cette ville dans cette langue. Essaie EN.</div>'; return; }
+
+    list.innerHTML = "";
+    const bounds = [];
+    pages.forEach((p) => {
+      const c = p.coordinates[0];
+      const link = "https://" + lang + ".wikipedia.org/?curid=" + p.pageid;
+      const marker = L.marker([c.lat, c.lon]).addTo(layer)
+        .bindPopup("<b>" + esc(p.title) + '</b><br><a href="' + link + '" target="_blank" rel="noopener">Wikipedia</a>');
+      bounds.push([c.lat, c.lon]);
+      const d = km(lat, lon, c.lat, c.lon).toFixed(1);
+      const el = document.createElement("div");
+      el.className = "card";
+      el.innerHTML =
+        (p.thumbnail ? '<img loading="lazy" src="' + esc(p.thumbnail.source) + '" alt="">' : '<div class="ph">📍</div>') +
+        "<div><h3>" + esc(p.title) + "</h3>" +
+        "<p>" + esc(p.extract || "") + "</p>" +
+        '<span class="dist">' + d + ' km du centre</span> · <a href="' + link + '" target="_blank" rel="noopener">Wikipedia</a></div>';
+      el.addEventListener("click", (e) => {
+        if (e.target.tagName === "A") return;
+        map.flyTo([c.lat, c.lon], 16);
+        marker.openPopup();
+        $("map").scrollIntoView({ behavior: "smooth", block: "nearest" });
+      });
+      list.appendChild(el);
+    });
+    map.fitBounds(bounds, { padding: [30, 30], maxZoom: 15 });
+  } catch (err) {
+    list.innerHTML = '<div id="status">Erreur de connexion. Réessaie dans un instant.</div>';
+  }
+}
+
+$("f").addEventListener("submit", (e) => {
+  e.preventDefault();
+  search($("q").value.trim(), $("lang").value);
+});
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("service-worker.js");
+</script>
+</body>
+</html>
