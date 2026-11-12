@@ -133,7 +133,7 @@ const TOURIST_TYPES = ["Q570116","Q4989906","Q33506","Q32815","Q16970","Q2977","
 
 async function touristSet(qids) {
   if (!qids.length) return null;
-  const q = "SELECT DISTINCT ?item WHERE { VALUES ?item { " + qids.map((x) => "wd:" + x).join(" ") +
+  const q = "SELECT DISTINCT ?item ?c WHERE { VALUES ?item { " + qids.map((x) => "wd:" + x).join(" ") +
     " } VALUES ?c { " + TOURIST_TYPES.map((x) => "wd:" + x).join(" ") + " } ?item wdt:P31/wdt:P279* ?c }";
   try {
     const r = await fetch("https://query.wikidata.org/sparql", {
@@ -143,7 +143,14 @@ async function touristSet(qids) {
     });
     if (!r.ok) return null;
     const j = await r.json();
-    return new Set(j.results.bindings.map((b) => b.item.value.split("/").pop()));
+    const m = new Map();
+    j.results.bindings.forEach((b) => {
+      const id = b.item.value.split("/").pop();
+      const c = b.c.value.split("/").pop();
+      if (!m.has(id)) m.set(id, new Set());
+      m.get(id).add(c);
+    });
+    return m;
   } catch (e) { return null; }
 }
 
@@ -180,7 +187,11 @@ async function wikiFetch(lang, lat, lon) {
 
   // 2) filtre touristique (Wikidata) ; si la requête échoue, on garde tout
   const tset = await touristSet(base.map((p) => p.qid).filter(Boolean));
-  base.forEach((p) => { p.tourist = tset ? (p.qid ? tset.has(p.qid) : false) : null; });
+  base.forEach((p) => {
+    p.tourist = tset ? (p.qid ? tset.has(p.qid) : false) : null;
+    const cls = tset && p.qid ? tset.get(p.qid) : null;
+    p.weak = !!(cls && cls.size === 1 && cls.has("Q11303"));
+  });
 
   // 3) fréquentation (popularité) pour les candidats touristiques ; sans erreur bloquante
   const cands = base.filter((p) => p.tourist !== false);
@@ -197,8 +208,11 @@ async function wikiFetch(lang, lat, lon) {
   } catch (e) { /* tri par distance si la popularité est indisponible */ }
 
   const byViews = (a, b) => b.views - a.views || a.index - b.index;
-  const tour = cands.sort(byViews).slice(0, 60);
-  const others = base.filter((p) => p.tourist === false).sort((a, b) => a.index - b.index).slice(0, 20);
+  const weakKeep = new Set(cands.filter((p) => p.weak).sort(byViews).slice(0, 3).map((p) => p.id));
+  const tour = cands.filter((p) => !p.weak || weakKeep.has(p.id)).sort(byViews).slice(0, 60);
+  const others = base.filter((p) => p.tourist === false || (p.weak && !weakKeep.has(p.id)))
+    .sort((a, b) => a.index - b.index).slice(0, 20);
+  others.forEach((p) => { p.tourist = false; });
   const chosen = tour.concat(others);
 
   // 4) photos et descriptions pour les lieux gardés
