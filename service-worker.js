@@ -1,4 +1,4 @@
-const CACHE = "visit-anywhere-v5";
+const CACHE = "visit-anywhere-v7";
 const FILES = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", (e) => {

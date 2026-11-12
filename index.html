@@ -74,6 +74,7 @@
     <button>Go</button>
   </form>
   <div id="sortbar" style="display:none;margin-top:8px;font-size:13px">
+    <div id="info" style="font-size:12px;opacity:.85;margin-bottom:6px"></div>
     Trier par :
     <select id="sort" style="width:auto;padding:4px 8px">
       <option value="pop">Les plus populaires</option>
@@ -153,6 +154,7 @@ async function queryAll(url) {
     let u = url;
     if (cont) for (const k in cont) u += "&" + k + "=" + encodeURIComponent(cont[k]);
     const data = await fetch(u).then((r) => r.json());
+    if (data.error) throw new Error("Wikipedia : " + (data.error.info || data.error.code));
     const q = (data.query && data.query.pages) || {};
     for (const id in q) pages[id] = Object.assign(pages[id] || {}, q[id]);
     if (!data.continue) break;
@@ -164,37 +166,53 @@ async function queryAll(url) {
 async function wikiFetch(lang, lat, lon) {
   const api = "https://" + lang + ".wikipedia.org/w/api.php?format=json&origin=*&action=query";
 
-  // 1) 200 articles proches : coordonnées, identifiant Wikidata, fréquentation
+  // 1) jusqu'à 200 articles proches : coordonnées + identifiant Wikidata
   const p1 = await queryAll(api + "&generator=geosearch&ggscoord=" + lat + "%7C" + lon +
-    "&ggsradius=10000&ggslimit=200&prop=coordinates%7Cpageprops%7Cpageviews&ppprop=wikibase_item&colimit=max&pvipdays=30");
-  const base = Object.values(p1).filter((p) => p.coordinates).map((p) => {
+    "&ggsradius=10000&ggslimit=200&prop=coordinates%7Cpageprops&ppprop=wikibase_item&colimit=max");
+  const base = Object.values(p1).filter((p) => p.coordinates && p.coordinates.length).map((p) => {
     const qid = p.pageprops && p.pageprops.wikibase_item;
     return { id: p.pageid, qid, key: qid || (lang + ":" + p.pageid), title: p.title,
              lat: p.coordinates[0].lat, lon: p.coordinates[0].lon,
-             views: p.pageviews ? Object.values(p.pageviews).reduce((a, b) => a + (b || 0), 0) : 0,
-             index: p.index || 0, img: null, text: "" };
+             views: 0, index: p.index || 0, img: null, text: "" };
   });
+  window.__analysed = base.length;
+  if (!base.length) return [];
 
-  // 2) filtre touristique (Wikidata)
+  // 2) filtre touristique (Wikidata) ; si la requête échoue, on garde tout
   const tset = await touristSet(base.map((p) => p.qid).filter(Boolean));
   base.forEach((p) => { p.tourist = tset ? (p.qid ? tset.has(p.qid) : false) : null; });
 
-  // 3) on garde les plus consultés (60 touristiques + 20 autres)
+  // 3) fréquentation (popularité) pour les candidats touristiques ; sans erreur bloquante
+  const cands = base.filter((p) => p.tourist !== false);
+  try {
+    const chunks = [];
+    for (let i = 0; i < cands.length; i += 50) chunks.push(cands.slice(i, i + 50));
+    const pv = await Promise.all(chunks.map((c) => queryAll(api + "&pageids=" + c.map((p) => p.id).join("%7C") +
+      "&prop=pageviews&pvipdays=30")));
+    const merged = Object.assign({}, ...pv);
+    cands.forEach((p) => {
+      const x = merged[p.id];
+      if (x && x.pageviews) p.views = Object.values(x.pageviews).reduce((a, b) => a + (b || 0), 0);
+    });
+  } catch (e) { /* tri par distance si la popularité est indisponible */ }
+
   const byViews = (a, b) => b.views - a.views || a.index - b.index;
-  const tour = base.filter((p) => p.tourist !== false).sort(byViews).slice(0, 60);
-  const others = base.filter((p) => p.tourist === false).sort(byViews).slice(0, 20);
+  const tour = cands.sort(byViews).slice(0, 60);
+  const others = base.filter((p) => p.tourist === false).sort((a, b) => a.index - b.index).slice(0, 20);
   const chosen = tour.concat(others);
 
-  // 4) photos et descriptions pour ces lieux seulement
-  const chunks = [];
-  for (let i = 0; i < chosen.length; i += 50) chunks.push(chosen.slice(i, i + 50));
-  const details = await Promise.all(chunks.map((c) => queryAll(api + "&pageids=" + c.map((p) => p.id).join("%7C") +
-    "&prop=pageimages%7Cextracts&piprop=thumbnail&pithumbsize=300&pilimit=max&exintro=1&explaintext=1&exsentences=2&exlimit=max")));
-  const d = Object.assign({}, ...details);
-  chosen.forEach((p) => {
-    const x = d[p.id];
-    if (x) { p.img = x.thumbnail && x.thumbnail.source; p.text = x.extract || ""; }
-  });
+  // 4) photos et descriptions pour les lieux gardés
+  try {
+    const chunks = [];
+    for (let i = 0; i < chosen.length; i += 50) chunks.push(chosen.slice(i, i + 50));
+    const details = await Promise.all(chunks.map((c) => queryAll(api + "&pageids=" + c.map((p) => p.id).join("%7C") +
+      "&prop=pageimages%7Cextracts&piprop=thumbnail&pithumbsize=300&pilimit=max&exintro=1&explaintext=1&exsentences=2&exlimit=max")));
+    const d = Object.assign({}, ...details);
+    chosen.forEach((p) => {
+      const x = d[p.id];
+      if (x) { p.img = x.thumbnail && x.thumbnail.source; p.text = x.extract || ""; }
+    });
+  } catch (e) { /* on affiche quand même les lieux sans photo */ }
   return chosen;
 }
 
@@ -268,18 +286,26 @@ async function search(city, lang) {
   layer.clearLayers();
   $("sortbar").style.display = "none";
   try {
-    const g = await fetch("https://nominatim.openstreetmap.org/search?format=json&limit=1&accept-language=" + lang + "&q=" + encodeURIComponent(city)).then((r) => r.json());
+    const nom = "https://nominatim.openstreetmap.org/search?format=json&limit=1&accept-language=" + lang + "&q=" + encodeURIComponent(city);
+    let g = await fetch(nom + "&featuretype=settlement").then((r) => r.json());
+    if (!g.length) g = await fetch(nom).then((r) => r.json());
     if (!g.length) { list.innerHTML = '<div id="status">Ville introuvable. Vérifie l’orthographe.</div>'; return; }
     const lat = +g[0].lat, lon = +g[0].lon;
     map.setView([lat, lon], 13);
     const pages = await wikiFetch(lang, lat, lon);
-    if (!pages.length) { list.innerHTML = '<div id="status">Aucun lieu trouvé pour cette ville dans cette langue. Essaie EN.</div>'; return; }
+    const where = (g[0].display_name || city).split(",").slice(0, 2).join(",");
+    if (!pages.length) {
+      list.innerHTML = '<div id="status">Aucun lieu retenu près de : ' + esc(where) + " (" + lat.toFixed(3) + ", " + lon.toFixed(3) + "). " +
+        (window.__analysed || 0) + " articles analysés. Essaie EN.</div>";
+      return;
+    }
     state = { lat, lon, lang, pages };
+    $("info").textContent = where + " · " + (window.__analysed || 0) + " articles analysés · " + pages.length + " gardés";
     $("sortbar").style.display = "block";
     render();
     loadStats(pages.map((p) => p.key));
   } catch (err) {
-    list.innerHTML = '<div id="status">Erreur de connexion. Réessaie dans un instant.</div>';
+    list.innerHTML = '<div id="status">Erreur : ' + esc(err && err.message ? err.message : err) + ". Réessaie dans un instant.</div>";
   }
 }
 
