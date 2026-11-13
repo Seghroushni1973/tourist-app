@@ -170,8 +170,72 @@ async function queryAll(url) {
   return pages;
 }
 
+async function famousPlaces(api, lang, lat, lon) {
+  const types = TOURIST_TYPES.map((x) => "wd:" + x).join(" ");
+  const q = 'SELECT DISTINCT ?item ?sl ?loc ?title WHERE { ' +
+    'SERVICE wikibase:around { ?item wdt:P625 ?loc . bd:serviceParam wikibase:center "Point(' + lon + " " + lat + ')"^^geo:wktLiteral . bd:serviceParam wikibase:radius "10" . } ' +
+    '?item wikibase:sitelinks ?sl . FILTER(?sl >= 15) ' +
+    '?art schema:about ?item ; schema:isPartOf <https://' + lang + '.wikipedia.org/> ; schema:name ?title . ' +
+    'VALUES ?c { ' + types + ' } ?item wdt:P31/wdt:P279* ?c . } ORDER BY DESC(?sl) LIMIT 80';
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 30000);
+  let j;
+  try {
+    const r = await fetch("https://query.wikidata.org/sparql", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/sparql-results+json" },
+      body: "query=" + encodeURIComponent(q), signal: ctl.signal
+    });
+    if (!r.ok) return [];
+    j = await r.json();
+  } finally { clearTimeout(timer); }
+
+  const seen = new Set();
+  const items = [];
+  j.results.bindings.forEach((b) => {
+    const qid = b.item.value.split("/").pop();
+    const m = /Point\(([-\d.eE+]+) ([-\d.eE+]+)\)/.exec(b.loc.value);
+    if (!m || seen.has(qid)) return;
+    seen.add(qid);
+    const plat = +m[2], plon = +m[1];
+    items.push({ qid, key: qid, title: b.title.value, lat: plat, lon: plon, views: +b.sl.value,
+                 index: Math.round(km(lat, lon, plat, plon) * 1000), img: null, text: "", tourist: true, weak: false, id: null });
+  });
+  window.__analysed = items.length;
+  if (!items.length) return [];
+
+  const chunks = [];
+  for (let i = 0; i < items.length; i += 50) chunks.push(items.slice(i, i + 50));
+  const details = await Promise.all(chunks.map((c) => queryAll(api + "&redirects=1&titles=" +
+    c.map((p) => encodeURIComponent(p.title)).join("%7C") +
+    "&prop=pageimages%7Cextracts%7Cpageprops&ppprop=wikibase_item&piprop=thumbnail&pithumbsize=300&pilimit=max&exintro=1&explaintext=1&exsentences=2&exlimit=max")));
+  const byQid = {};
+  Object.assign({}, ...details);
+  details.forEach((d) => Object.values(d).forEach((pg) => {
+    const q = pg.pageprops && pg.pageprops.wikibase_item;
+    if (q) byQid[q] = pg;
+  }));
+  const out = [];
+  items.forEach((p) => {
+    const pg = byQid[p.qid];
+    if (!pg || !pg.pageid) return;
+    p.id = pg.pageid;
+    p.title = pg.title || p.title;
+    p.img = pg.thumbnail && pg.thumbnail.source;
+    p.text = pg.extract || "";
+    out.push(p);
+  });
+  return out;
+}
+
 async function wikiFetch(lang, lat, lon) {
   const api = "https://" + lang + ".wikipedia.org/w/api.php?format=json&origin=*&action=query";
+
+  // 0) méthode principale : lieux touristiques célèbres (Wikidata, classés par notoriété mondiale)
+  try {
+    const fam = await famousPlaces(api, lang, lat, lon);
+    if (fam.length >= 8) return fam;
+  } catch (e) { /* on passe à la méthode de secours */ }
 
   // 1) jusqu'à 200 articles proches : coordonnées + identifiant Wikidata
   const p1 = await queryAll(api + "&generator=geosearch&ggscoord=" + lat + "%7C" + lon +
@@ -251,6 +315,29 @@ async function loadStats(keys) {
 }
 
 /* ---------- Rendu de la liste ---------- */
+const EMOJI = { place:"🏛️", monument:"🕌", jardin:"🌳", marché:"🛍️", musée:"🖼️", quartier:"🏘️",
+  nature:"🌄", plage:"🏖️", religieux:"🕌", autre:"📍" };
+
+async function dbPlaces(lat, lon) {
+  if (!sb) return null;
+  const { data: cities, error } = await sb.from("cities").select("*");
+  if (error || !cities || !cities.length) return null;
+  let best = null, bd = Infinity;
+  cities.forEach((c) => { const d = km(lat, lon, c.lat, c.lon); if (d < bd) { bd = d; best = c; } });
+  if (!best || bd > 30) return null;
+  const { data: pl, error: e2 } = await sb.from("places").select("*")
+    .eq("city_slug", best.slug).order("popularity", { ascending: false });
+  if (e2 || !pl || !pl.length) return null;
+  window.__source = best.name;
+  window.__analysed = pl.length;
+  return pl.map((r, i) => ({
+    id: null, qid: null, key: "p:" + r.id, title: r.name, lat: r.lat, lon: r.lon,
+    views: r.popularity, index: i, img: null, text: r.description || "",
+    tourist: true, weak: false, emoji: EMOJI[r.category] || "📍",
+    link: "https://www.google.com/maps/search/?api=1&query=" + r.lat + "," + r.lon
+  }));
+}
+
 function render() {
   const list = $("list");
   layer.clearLayers();
@@ -266,18 +353,19 @@ function render() {
 
   const bounds = [];
   items.forEach((p) => {
-    const link = "https://" + lang + ".wikipedia.org/?curid=" + p.id;
+    const link = p.link || ("https://" + lang + ".wikipedia.org/?curid=" + p.id);
+    const linkLabel = p.link ? "Itinéraire" : "Wikipedia";
     const marker = L.marker([p.lat, p.lon]).addTo(layer)
-      .bindPopup("<b>" + esc(p.title) + '</b><br><a href="' + link + '" target="_blank" rel="noopener">Wikipedia</a>');
+      .bindPopup("<b>" + esc(p.title) + '</b><br><a href="' + link + '" target="_blank" rel="noopener">' + linkLabel + "</a>");
     bounds.push([p.lat, p.lon]);
     const d = km(lat, lon, p.lat, p.lon).toFixed(1);
     const el = document.createElement("div");
     el.className = "card";
     el.innerHTML =
-      (p.img ? '<img loading="lazy" src="' + esc(p.img) + '" alt="">' : '<div class="ph">📍</div>') +
+      (p.img ? '<img loading="lazy" src="' + esc(p.img) + '" alt="">' : '<div class="ph">' + (p.emoji || "📍") + "</div>") +
       "<div><h3>" + esc(p.title) + "</h3>" +
       "<p>" + esc(p.text) + "</p>" +
-      '<span class="dist">' + d + ' km du centre</span> · <a href="' + link + '" target="_blank" rel="noopener">Wikipedia</a>' +
+      '<span class="dist">' + d + ' km du centre</span> · <a href="' + link + '" target="_blank" rel="noopener">' + linkLabel + "</a>" +
       '<span class="badge" data-key="' + esc(p.key) + '"></span><br>' +
       '<button class="rev" type="button">💬 Avis</button></div>';
     el.addEventListener("click", (e) => {
@@ -306,7 +394,10 @@ async function search(city, lang) {
     if (!g.length) { list.innerHTML = '<div id="status">Ville introuvable. Vérifie l’orthographe.</div>'; return; }
     const lat = +g[0].lat, lon = +g[0].lon;
     map.setView([lat, lon], 13);
-    const pages = await wikiFetch(lang, lat, lon);
+    window.__source = null;
+    let pages = null;
+    try { pages = await dbPlaces(lat, lon); } catch (e) { pages = null; }
+    if (!pages) pages = await wikiFetch(lang, lat, lon);
     const where = (g[0].display_name || city).split(",").slice(0, 2).join(",");
     if (!pages.length) {
       list.innerHTML = '<div id="status">Aucun lieu retenu près de : ' + esc(where) + " (" + lat.toFixed(3) + ", " + lon.toFixed(3) + "). " +
@@ -314,7 +405,9 @@ async function search(city, lang) {
       return;
     }
     state = { lat, lon, lang, pages };
-    $("info").textContent = where + " · " + (window.__analysed || 0) + " articles analysés · " + pages.length + " gardés";
+    $("info").textContent = window.__source
+      ? window.__source + " · " + pages.length + " lieux sélectionnés"
+      : where + " · " + (window.__analysed || 0) + " articles analysés · " + pages.length + " gardés";
     $("sortbar").style.display = "block";
     render();
     loadStats(pages.map((p) => p.key));
