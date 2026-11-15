@@ -326,7 +326,8 @@ async function dbPlaces(lat, lon) {
   cities.forEach((c) => { const d = km(lat, lon, c.lat, c.lon); if (d < bd) { bd = d; best = c; } });
   if (!best || bd > 30) return null;
   const { data: pl, error: e2 } = await sb.from("places").select("*")
-    .eq("city_slug", best.slug).order("popularity", { ascending: false });
+    .eq("city_slug", best.slug).eq("visible", true)
+    .order("popularity", { ascending: false }).limit(60);
   if (e2 || !pl || !pl.length) return null;
   window.__source = best.name;
   window.__analysed = pl.length;
