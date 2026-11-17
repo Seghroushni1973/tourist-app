@@ -316,7 +316,8 @@ async function loadStats(keys) {
 
 /* ---------- Rendu de la liste ---------- */
 const EMOJI = { place:"🏛️", monument:"🕌", jardin:"🌳", marché:"🛍️", musée:"🖼️", quartier:"🏘️",
-  nature:"🌄", plage:"🏖️", religieux:"🕌", autre:"📍" };
+  nature:"🌄", plage:"🏖️", religieux:"🕌", autre:"📍",
+  "Site historique":"🏛️", "Musée":"🖼️", "Point de vue":"🌄", "Art":"🎨", "Attraction":"📍" };
 
 async function dbPlaces(lat, lon) {
   if (!sb) return null;
