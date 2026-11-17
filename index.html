@@ -72,6 +72,7 @@
       <option value="es">ES</option>
     </select>
     <button>Go</button>
+    <button type="button" id="near" title="Autour de moi" aria-label="Autour de moi">📍</button>
   </form>
   <div id="sortbar" style="display:none;margin-top:8px;font-size:13px">
     <div id="info" style="font-size:12px;opacity:.85;margin-bottom:6px"></div>
@@ -351,6 +352,7 @@ function render() {
     if (f.length) items = f;
   }
   if ($("sort").value === "pop") items.sort((a, b) => b.views - a.views || a.index - b.index);
+  else if (state.me) items.sort((a, b) => km(lat, lon, a.lat, a.lon) - km(lat, lon, b.lat, b.lon));
   else items.sort((a, b) => a.index - b.index);
 
   const bounds = [];
@@ -367,7 +369,7 @@ function render() {
       (p.img ? '<img loading="lazy" src="' + esc(p.img) + '" alt="">' : '<div class="ph">' + (p.emoji || "📍") + "</div>") +
       "<div><h3>" + esc(p.title) + "</h3>" +
       "<p>" + esc(p.text) + "</p>" +
-      '<span class="dist">' + d + ' km du centre</span> · <a href="' + link + '" target="_blank" rel="noopener">' + linkLabel + "</a>" +
+      '<span class="dist">' + d + (state.me ? " km de toi" : " km du centre") + '</span> · <a href="' + link + '" target="_blank" rel="noopener">' + linkLabel + "</a>" +
       '<span class="badge" data-key="' + esc(p.key) + '"></span><br>' +
       '<button class="rev" type="button">💬 Avis</button></div>';
     el.addEventListener("click", (e) => {
@@ -422,6 +424,42 @@ $("f").addEventListener("submit", (e) => {
   e.preventDefault();
   search($("q").value.trim(), $("lang").value);
 });
+function nearMe() {
+  const list = $("list");
+  if (!navigator.geolocation) {
+    list.innerHTML = '<div id="status">La localisation n’est pas disponible sur cet appareil.</div>';
+    return;
+  }
+  list.innerHTML = '<div id="status">Localisation en cours…</div>';
+  navigator.geolocation.getCurrentPosition(async (pos) => {
+    const lat = pos.coords.latitude, lon = pos.coords.longitude, lang = $("lang").value;
+    try {
+      layer.clearLayers();
+      map.setView([lat, lon], 13);
+      window.__source = null;
+      const pages = await dbPlaces(lat, lon);
+      if (!pages) {
+        list.innerHTML = '<div id="status">Aucun lieu enregistré à moins de 30 km de ta position. Tape plutôt le nom d’une ville.</div>';
+        return;
+      }
+      state = { lat, lon, lang, pages, me: true };
+      $("info").textContent = "Autour de toi · " + window.__source + " · " + pages.length + " lieux";
+      $("sort").value = "dist";
+      $("sortbar").style.display = "block";
+      render();
+      L.circleMarker([lat, lon], { radius: 8, color: "#fff", weight: 2, fillColor: "#1a73e8", fillOpacity: 1 })
+        .addTo(layer).bindPopup("Tu es ici");
+      loadStats(pages.map((p) => p.key));
+    } catch (err) {
+      list.innerHTML = '<div id="status">Erreur : ' + esc(err && err.message ? err.message : err) + ".</div>";
+    }
+  }, (err) => {
+    list.innerHTML = '<div id="status">' + (err && err.code === 1
+      ? "Autorisation refusée : autorise la localisation pour ce site dans les réglages du navigateur."
+      : "Position introuvable. Vérifie que le GPS est activé et réessaie.") + "</div>";
+  }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
+}
+$("near").addEventListener("click", nearMe);
 $("sort").addEventListener("change", render);
 $("only").addEventListener("change", render);
 
