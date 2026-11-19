@@ -352,8 +352,7 @@ function render() {
     if (f.length) items = f;
   }
   if ($("sort").value === "pop") items.sort((a, b) => b.views - a.views || a.index - b.index);
-  else if (state.me) items.sort((a, b) => km(lat, lon, a.lat, a.lon) - km(lat, lon, b.lat, b.lon));
-  else items.sort((a, b) => a.index - b.index);
+  else items.sort((a, b) => km(lat, lon, a.lat, a.lon) - km(lat, lon, b.lat, b.lon));
 
   const bounds = [];
   items.forEach((p) => {
@@ -384,6 +383,10 @@ function render() {
   if (bounds.length) map.fitBounds(bounds, { padding: [30, 30], maxZoom: 15 });
   list.scrollTop = 0;
   paintBadges();
+  if (state.me) {
+    L.circleMarker([lat, lon], { radius: 8, color: "#fff", weight: 2, fillColor: "#1a73e8", fillOpacity: 1 })
+      .addTo(layer).bindPopup("Tu es ici");
+  }
 }
 
 async function search(city, lang) {
